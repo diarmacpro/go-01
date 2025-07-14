@@ -24,69 +24,90 @@ func NewClient() *WhatsAppClient {
 	return &WhatsAppClient{}
 }
 
-// Membuka koneksi ke server WhatsApp Web
+// Langkah 1: Koneksi ke WebSocket WhatsApp
 func (w *WhatsAppClient) ConnectSocket() error {
 	url := "wss://web.whatsapp.com/ws/chat"
+	log.Println("[ConnectSocket] Connecting to:", url)
+
 	conn, _, err := websocket.DefaultDialer.Dial(url, nil)
 	if err != nil {
+		log.Println("[ConnectSocket] Error:", err)
 		return err
 	}
-	log.Println("WebSocket connected")
+
+	log.Println("[ConnectSocket] WebSocket connected")
 	w.conn = conn
 	return nil
 }
 
-// Mengirim Client Hello (Noise handshake tahap 1)
+// Langkah 2: Kirim Client Hello (Noise Handshake Step 1)
 func (w *WhatsAppClient) SendClientHello() error {
+	log.Println("[SendClientHello] Preparing Noise handshake")
+
 	config := noise.Config{
 		Pattern:   noise.HandshakeXX,
 		Initiator: true,
 		Prologue:  []byte("Noise_XX_25519_AESGCM_SHA256"),
 	}
+
 	hs, err := noise.NewHandshakeState(config)
 	if err != nil {
+		log.Println("[SendClientHello] Failed to create handshake state:", err)
 		return err
 	}
 
-	w.hs = hs // simpan state untuk lanjutkan nanti
+	w.hs = hs // simpan handshake state untuk tahap selanjutnya
 
 	msg1, _, _, err := hs.WriteMessage(nil, nil)
 	if err != nil {
+		log.Println("[SendClientHello] Failed to write message:", err)
 		return err
 	}
 
 	finalPayload := append([]byte{0x00, 0x01}, msg1...)
 
+	log.Printf("[SendClientHello] Sending client hello (%d bytes)", len(finalPayload))
 	err = w.conn.WriteMessage(websocket.BinaryMessage, finalPayload)
 	if err != nil {
+		log.Println("[SendClientHello] Error sending client hello:", err)
 		return err
 	}
 
-	log.Println("Client Hello sent")
+	log.Println("[SendClientHello] Client Hello sent successfully")
 	return nil
 }
 
-// Membaca Server Hello + pesan 'ref' untuk login (QR)
+// Langkah 3: Terima dan parsing pesan ref dari server
 func (w *WhatsAppClient) ReadRef() (*RefResponse, error) {
+	log.Println("[ReadRef] Waiting for server response...")
+
 	_, msg, err := w.conn.ReadMessage()
 	if err != nil {
+		log.Println("[ReadRef] Failed to read message:", err)
 		return nil, err
 	}
 
-	// Lanjutkan Noise handshake (read message 2)
+	log.Printf("[ReadRef] Received raw message (%d bytes)", len(msg))
+	log.Println("[ReadRef] Raw hex:", msg)
+
 	plaintext, _, _, err := w.hs.ReadMessage(nil, msg)
 	if err != nil {
-		log.Println("Noise read failed:", err)
+		log.Println("[ReadRef] Noise ReadMessage failed:", err)
 		return nil, err
 	}
 
-	log.Println("Plaintext from WA:", string(plaintext))
+	log.Println("[ReadRef] Decrypted plaintext:")
+	log.Println(string(plaintext))
 
 	var ref RefResponse
 	if err := json.Unmarshal(plaintext, &ref); err != nil {
-		log.Println("JSON parse failed:", err)
+		log.Println("[ReadRef] JSON parse failed:", err)
 		return nil, err
 	}
+
+	log.Println("[ReadRef] Parsed ref:", ref.Ref)
+	log.Println("[ReadRef] ClientID:", ref.ClientID)
+	log.Println("[ReadRef] PublicKey:", ref.PublicKey)
 
 	return &ref, nil
 }
